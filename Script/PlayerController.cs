@@ -1,10 +1,15 @@
+using NUnit.Framework;
 using System;
+using System.Collections;
+using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.UI;
 
 public class PlayerController : MonoBehaviour
 {
+    // import คลาสที่จำเป็น
+    private UIManager uiManager;
     // ตั้งค่าตัวละครต่างๆ (การเคลื่อนที่)
     [Header("ตั้งค่าตัวละครต่างๆ (การเคลื่อนที่)")]
     [SerializeField] private float speed = 15f; // ความเร็วที่ใช้วิ่ง
@@ -24,7 +29,9 @@ public class PlayerController : MonoBehaviour
     [SerializeField] private GameObject attackArea; // ขอบเขตการโจมตี
     [SerializeField] private GameObject slamDunkAttackArea; // ขอบเขตการโจมตี Slamdunk
     [SerializeField] private GameObject slamDunkEffect; // effect ตอน slamDunk ถึงพื้น
-    [SerializeField] private GameObject skill; // skill ตัวละคร
+    [SerializeField] private GameObject ballSkill; // skill ตัวละคร
+    [SerializeField] private GameObject lightSkill;
+    [SerializeField] private GameObject lightExplodeSkill;
     [SerializeField] private float cooldownSkill;
     private float skillRate;
 
@@ -40,6 +47,7 @@ public class PlayerController : MonoBehaviour
     private bool isSlamDrunkAttack = false;
     private bool isAirAttack = false;
     private bool havedAirAttack = false;
+    private float slashOffset_X ,slashOffset_Y, slashRotate_Y, slashRotate_Z;
     
     // บูลลีนเช็คการเคลื่อนไหวตัวละคร
     private readonly float jumpRate = 0.1f; // เช็คการกระโดด
@@ -72,10 +80,17 @@ public class PlayerController : MonoBehaviour
     // Hp Bar
     [Header("Hp Bar")]
     [SerializeField] private Slider hpBar;
+    [SerializeField] private GameObject healEffect;
+    [SerializeField] private Text potionUI;
+    [SerializeField] private GameObject bossBar;
+    public bool havedBossBar = false;
+    private int numPotion = 3;
 
     // ตรวจตำแหน่งตัวละคร เทียบกับ Enemy
     [Header("Enemy position")]
-    [SerializeField] private Transform enemyTransform; // ตำแหน่ง Enemy
+    [SerializeField] private Transform[] enemiesTransform;
+    [SerializeField] private Transform enemyTransform; // ตำแหน่ง Enemy ที่ใกล้ที่สุด (หลายตัว)
+    private Transform nearestEnemy;
     private float playerPos;
     private float enemyPos;
 
@@ -83,17 +98,22 @@ public class PlayerController : MonoBehaviour
     private Rigidbody2D rigidBody2D; 
     private readonly Physics2D physics2D;
     private CoconutAttack coconutAtk;
+    private UIManager uIManager;
+    private DeerBoss bossDetials;
     Animator animator;
 
     // ตรวจสอบสถานะตัวละคร
     private bool isDeath = false;
     private bool isSkill = false;
+    private bool isHealed = false;
 
     // Start is called once before the first execution of Update after the MonoBehaviour is created
     void Start()
     {
         rigidBody2D = this.gameObject.GetComponent<Rigidbody2D>();
         animator = this.gameObject.GetComponent<Animator>();
+        uIManager = FindAnyObjectByType<UIManager>();
+        bossDetials = FindAnyObjectByType<DeerBoss>();
         GameObject sliderObj = GameObject.FindWithTag("Slider");
         if (sliderObj != null ) { hpBar = sliderObj.GetComponent<Slider>(); }
 
@@ -106,15 +126,26 @@ public class PlayerController : MonoBehaviour
     // Update is called once per frame
     void Update()
     {
+        if (uIManager != null && uIManager.isResting)
+        { // ถ้ากำลังพักผ่อนอยู่ ให้หยุดการเคลื่อนที่ทั้งหมด
+            animator.SetFloat("speed", 0);
+            animator.SetBool("attack", false);
+            checkAndDoIdle();
+            return;
+        }
+        if (uIManager != null && uIManager.isPausing) { return; }
+
         // ส่วนอัพเดทค่าต่างๆ
         animator.SetBool("isGround", isGrounded);
         animator.SetFloat("Y", rigidBody2D.linearVelocity.y);
+        NearestEnemySelected();
 
         isAttackingAnimation = animator.GetCurrentAnimatorStateInfo(0).IsName("Vaja_attack1") ||
                                animator.GetCurrentAnimatorStateInfo(0).IsName("Vaja_attack2") ||
                                animator.GetCurrentAnimatorStateInfo(0).IsName("Vaja_attack3");
 
         if (isGrounded) { havedAirAttack = false; }
+        if (isHealed) { StartCoroutine(resetHealed()); }
 
         // ถ้ากำลังจับผนัง, ดอดจ์, หยุดการเคลื่อนไหวทั้งหมด
         if (!isGrabing && !isDodge && !isAttacking && !isSlamDrunkAttack && !isAirAttack && !isKnockback && !isDeath && !isSkill) {
@@ -125,6 +156,7 @@ public class PlayerController : MonoBehaviour
 
             Dodge();
             Skill();
+            Healing();
 
             if (isGrounded && !(comboCounter == 3)) { Attack(); }
             // is not ground condition
@@ -176,6 +208,22 @@ public class PlayerController : MonoBehaviour
         Gizmos.DrawLine(wallCheck.position, new Vector3(wallCheck.position.x + wallCheckDistance, wallCheck.position.y, wallCheck.position.z));
         Gizmos.DrawLine(wallCheck.position, new Vector3(wallCheck.position.x - wallCheckDistance, wallCheck.position.y, wallCheck.position.z));
     }
+    private void checkAndDoIdle() {
+        // ตัวละครหยุด
+        if (isMoving)
+        {
+            isMoving = false;
+            SetRandomIdleTime(); // สุ่มเวลา idle ใหม่
+        }
+        // ลดเวลา idle ลง
+        idleTime -= Time.deltaTime;
+        if (idleTime <= 0)
+        {
+            // เมื่อถึงเวลา idle ที่สุ่มได้แล้ว ให้เปลี่ยน animation idle
+            RandomIdleAnimation();
+            SetRandomIdleTime(); // สุ่มเวลาต่อไป
+        }
+    }
 
     // ฟังก์ชั่น Handmade
     private void Movement() {
@@ -196,20 +244,7 @@ public class PlayerController : MonoBehaviour
             transform.Translate(Vector2.right * (speed * Time.deltaTime));
             transform.eulerAngles = new Vector2(0, 0);
         } else {
-            // ตัวละครหยุด
-            if (isMoving)
-            {
-                isMoving = false;
-                SetRandomIdleTime(); // สุ่มเวลา idle ใหม่
-            }
-            // ลดเวลา idle ลง
-            idleTime -= Time.deltaTime;
-            if (idleTime <= 0)
-            {
-                // เมื่อถึงเวลา idle ที่สุ่มได้แล้ว ให้เปลี่ยน animation idle
-                RandomIdleAnimation();
-                SetRandomIdleTime(); // สุ่มเวลาต่อไป
-            }
+            checkAndDoIdle();
         }
     }
     private void Jumping() {
@@ -234,7 +269,7 @@ public class PlayerController : MonoBehaviour
         }
     }
     private void Dodge() {
-        if (Input.GetKeyDown(KeyCode.LeftShift) && Time.time >= nextDodge && !Input.GetMouseButton(0)) {
+        if ((Input.GetKeyDown(KeyCode.LeftShift) || Input.GetKeyDown(KeyCode.C)) && Time.time >= nextDodge && !Input.GetMouseButton(0)) {
             isDodge = true;
             animator.SetBool("dodge", true);
             ResetCombo(); // reset combo when dodge
@@ -257,7 +292,7 @@ public class PlayerController : MonoBehaviour
     }
     private void Attack() {
         // ตรวจสอบการกดปุ่มโจมตี
-        if (Input.GetMouseButtonDown(0) && Time.time >= nextattackRate && !Input.GetKey(KeyCode.LeftShift)) {
+        if ((Input.GetMouseButtonDown(0) || Input.GetKeyDown(KeyCode.Z)) && Time.time >= nextattackRate && !Input.GetKey(KeyCode.LeftShift)) {
             if (Time.time - lastAttackTime <= comboTimeWindow + attackRate) {
                 comboCounter++;
             } else {
@@ -272,14 +307,18 @@ public class PlayerController : MonoBehaviour
             // เล่น Animation ตาม Combo
             animator.SetInteger("Combo", comboCounter);
             if (comboCounter == 1) {
+                slashOffset_X = 3.5f; slashOffset_Y = 2.95f;
+                slashRotate_Y = 0; slashRotate_Z = 0;
                 rigidBody2D.AddForce(speed * (GetLeftRight() *(Vector2.right * (jumpPower / 2.5f))));
-                GenAttackArea(0.3f, 0.7f, attackArea);
+                GenAttackArea(3.75f, 1.75f, attackArea);
             } if (comboCounter == 2) {
+                slashOffset_X = 3.5f; slashOffset_Y = 2.95f;
+                slashRotate_Y = 180; slashRotate_Z = 45;
                 rigidBody2D.AddForce(speed * (GetLeftRight() *(Vector2.right * (jumpPower / 5))));
-                GenAttackArea(0.125f, 0.7f, attackArea);
+                GenAttackArea(2.75f, 1.75f, attackArea);
             } if (comboCounter == 3) {
                 rigidBody2D.AddForce(speed * (GetLeftRight() *(Vector2.right * (jumpPower / 1))));
-                GenAttackArea(0, 0.7f, attackArea);
+                GenAttackArea(3.75f, 1.75f, attackArea);
             }
         }
     }
@@ -307,12 +346,12 @@ public class PlayerController : MonoBehaviour
         animator.SetInteger("Combo", 0);
     }
     private void AirAttack() {
-        if (Input.GetMouseButtonDown(0) && !havedAirAttack && Mathf.Abs(rigidBody2D.linearVelocity.y) >= airAttackAllow) {
+        if ((Input.GetMouseButtonDown(0) || Input.GetKeyDown(KeyCode.Z)) && !havedAirAttack && Mathf.Abs(rigidBody2D.linearVelocity.y) >= airAttackAllow) {
             placeGrabing = transform.position;
             isAirAttack = true;
             havedAirAttack = true;
             animator.SetBool("isAirAttack", true);
-            GenAttackArea(0.125f, 0.4f, attackArea);
+            GenAttackArea(2.75f, 1.75f, attackArea);
             transform.position = placeGrabing;
             rigidBody2D.linearVelocity = new Vector2(0, 0);
         }
@@ -335,12 +374,13 @@ public class PlayerController : MonoBehaviour
     }
     private void SlamDrunkAttack() {
         // ตรวจสอบการกดปุ่มโจมตี
-        if (Input.GetMouseButtonDown(0) && (Input.GetAxis("Vertical") <= -0.01) && !havedAirAttack && Mathf.Abs(rigidBody2D.linearVelocity.y) >= slamDrunkAllow) {
+        if ((Input.GetMouseButtonDown(0) || Input.GetKeyDown(KeyCode.Z)) && (Input.GetAxis("Vertical") <= -0.01) && !havedAirAttack && Mathf.Abs(rigidBody2D.linearVelocity.y) >= slamDrunkAllow) {
             placeGrabing = transform.position;
             isSlamDrunkAttack = true;
             havedAirAttack = true;
             animator.SetBool("isSlamDrunkAttack", true);
             GenAttackArea(0.25f, 0, slamDunkAttackArea);
+            // Instantiate(slamDunkEffect, transform.position, transform.rotation);
             if (rigidBody2D.linearVelocity.y >= 0) {
                 rigidBody2D.AddForce( Vector2.up * (jumpPower  / 2) );
             } else {
@@ -361,9 +401,14 @@ public class PlayerController : MonoBehaviour
             isSlamDrunkAttack = false;
             animator.SetBool("isSlamDrunkAttack", false);
             rigidBody2D.linearVelocity = new Vector2(0, jumpPower * 0.65f * -1f);
+            // if (animator.IsInTransition(0)) { Instantiate(slamDunkEffect, transform.position, Quaternion.identity); }
             // if (isGrounded) { Instantiate(slamDunkEffect, new Vector3(transform.position.x + (0.35f * GetLeftRight()), transform.position.y, transform.position.z), transform.rotation); }
-            Instantiate(slamDunkEffect, new Vector3(transform.position.x + (0.35f * GetLeftRight()), transform.position.y, transform.position.z), transform.rotation);
+            // Instantiate(slamDunkEffect, new Vector3(transform.position.x + (0.35f * GetLeftRight()), transform.position.y, transform.position.z), transform.rotation);
         }
+        // else if (stateInfo.IsName("Vaja_SlamDrunk") && stateInfo.normalizedTime >= 0.75f)
+        // {
+            // if (animator.IsInTransition(0)) { Instantiate(slamDunkEffect, transform.position, Quaternion.identity); }
+        // }
     }
     private bool CheckIdle() {
         // ตรวจสอบว่าแอนิเมชั่นที่กำลังเล่นเสร็จแล้วหรือไม่
@@ -380,17 +425,35 @@ public class PlayerController : MonoBehaviour
     private void RandomIdleAnimation() {
         // เปลี่ยน animation idle อย่างสุ่ม (สมมุติว่าใน Animator มีหลาย state เช่น "Idle1", "Idle2", "Idle3")
         int newrandomIdle = UnityEngine.Random.Range(1, 4); // จะสุ่มให้เลือกจาก "Idle1", "Idle2", "Idle3"
-        if (newrandomIdle == randomIdle) { return; }
+        if (newrandomIdle == randomIdle) { 
+            animator.SetInteger("IdleState", 0);
+            return; 
+        }
         randomIdle = newrandomIdle;
         animator.SetInteger("IdleState", randomIdle);  // ตั้งค่าไปยัง Animator
     }
     private void Skill()
     {
-        if (Input.GetKeyDown(KeyCode.E) && Time.time > skillRate)
+        AnimatorStateInfo stateInfo = animator.GetCurrentAnimatorStateInfo(0);
+        if (Input.GetKeyDown(KeyCode.E) && Time.time > skillRate && isGrounded)
         {
             isSkill = true;
             animator.SetBool("isSkillCasting", true);
-            Instantiate(skill, new Vector3(transform.position.x + (1.25f * GetLeftRight()), transform.position.y + 1.85f, transform.position.z), transform.rotation);
+            Instantiate(ballSkill, new Vector3(transform.position.x + (2.15f * GetLeftRight()), transform.position.y + 5f, transform.position.z), transform.rotation);
+            skillRate = Time.time + cooldownSkill;
+        }
+        if (Input.GetKeyDown(KeyCode.Q) && Time.time > skillRate && isGrounded)
+        {
+            isSkill = true;
+            animator.SetBool("isSkillCasting", true);
+            Instantiate(lightSkill, new Vector3(enemyTransform.position.x, enemyTransform.position.y + 12f, enemyTransform.position.z), Quaternion.identity);
+            skillRate = Time.time + cooldownSkill;
+        }
+        if (Input.GetKeyDown(KeyCode.R) && Time.time > skillRate && isGrounded)
+        {
+            isSkill = true;
+            animator.SetBool("isSkillCasting", true);
+            Instantiate(lightExplodeSkill, new Vector3(enemyTransform.position.x, enemyTransform.position.y + 7f, enemyTransform.position.z), Quaternion.identity);
             skillRate = Time.time + cooldownSkill;
         }
     }
@@ -405,6 +468,17 @@ public class PlayerController : MonoBehaviour
                 isSkill = false;
                 animator.SetBool("isSkillCasting", false);
             }
+        }
+    }
+    private void Healing()
+    {
+        if (Input.GetKey(KeyCode.H) && numPotion > 0 && !isHealed)
+        {
+            Instantiate(healEffect, new Vector3(transform.position.x, transform.position.y, transform.position.z), Quaternion.identity);
+            healt += 25;
+            numPotion -= 1;
+            potionUI.text = "x " + numPotion.ToString();
+            isHealed = true;
         }
     }
     private void GenAttackArea(float offsetX, float offsetY, GameObject areaAtk) // สร้างขอบเขตการโจมตี
@@ -431,13 +505,54 @@ public class PlayerController : MonoBehaviour
         rigidBody2D.linearVelocity = new Vector2(0, 0);
         // if (stateInfo.IsName("Vaja_dead"))
         // {
-            // if (stateInfo.normalizedTime > 0.95) { healt += 1; }
+            // if (stateInfo.normalizedTime > 0.95) { healt += 1; animator.SetBool("isDead", false); }
         // }
     }
+    private void GenSlamDunkEffect()
+    {
+        Instantiate(slamDunkEffect, new Vector3(transform.position.x, transform.position.y, transform.position.z), Quaternion.identity);
+    }
+    private void GenSlash(GameObject slashEffect)
+    {
+        Quaternion playerRotate = transform.rotation;
+        float playerRotate_Y = playerRotate.eulerAngles.y;
+        Quaternion slashRotate = Quaternion.Euler(0, playerRotate_Y + slashRotate_Y, slashRotate_Z);
+        Instantiate(slashEffect, new Vector3(transform.position.x + (slashOffset_X * GetLeftRight()), transform.position.y + slashOffset_Y, transform.position.z), slashRotate);
+    }
+    private void NearestEnemySelected()
+    {
+        float minDistance = Mathf.Infinity;
+        foreach (Transform enemy in enemiesTransform)
+        {
+            float distance = Vector3.Distance(transform.position, enemy.position);
+            if (distance < minDistance)
+            {
+                minDistance = distance;
+                nearestEnemy =  enemy;
+            }
+        }
+        enemyTransform = nearestEnemy;
+    }
+
+    IEnumerator resetHealed()
+    {
+        yield return new WaitForSeconds(1.5f);
+        isHealed = false;
+    } 
     public int GetHealth()
     {
         return healt;
     }
+
+    public void setHealth(int health)
+    {
+        this.healt = health;
+    }
+    public void setNumPotion(int numPotion)
+    {
+        this.numPotion = numPotion;
+    }
+    public bool GetIsGrounded() { return isGrounded; }
     private int GetLeftRight() {
         if (left) {
             return -1;
@@ -447,7 +562,7 @@ public class PlayerController : MonoBehaviour
     private void OnTriggerEnter2D(Collider2D target)
     {
         // การโจมตีของ StoneMonster
-        if (target.gameObject.CompareTag("StoneMonsAtk_1") || target.gameObject.CompareTag("StoneMonsAtk_3") && !isDodge)
+        if (target.gameObject.CompareTag("StoneMonsAtk_1") || target.gameObject.CompareTag("StoneMonsAtk_3") && !isDodge && !isKnockback)
         {
             isKnockback = true;
             animator.SetTrigger("gotAttack");
@@ -456,7 +571,7 @@ public class PlayerController : MonoBehaviour
             healt -= UnityEngine.Random.Range(3, 8);
             if (gameObject.CompareTag("StoneMonsAtk_1")) { Destroy(target.gameObject); }
         }
-        if (target.gameObject.CompareTag("StoneMonsAtk_2") && !isDodge)
+        if (target.gameObject.CompareTag("StoneMonsAtk_2") && !isDodge && !isKnockback)
         {
             isKnockback = true;
             animator.SetTrigger("gotAttack");
@@ -465,15 +580,25 @@ public class PlayerController : MonoBehaviour
             healt -= UnityEngine.Random.Range(3, 8);
             Destroy(target.gameObject);
         }
-        // การโจมตีของ CoconutMonster
-        if (target.gameObject.CompareTag("CoconutAtk") && !isDodge)
+        if (target.CompareTag("CoconutAtk") && !isDodge && !isKnockback)
         {
             isKnockback = true;
             animator.SetTrigger("gotAttack");
-            if (playerPos > enemyPos) { rigidBody2D.AddForceX(knockbackForce * 0.55f, ForceMode2D.Impulse); }
-            else if (playerPos < enemyPos) { rigidBody2D.AddForceX(knockbackForce * -0.55f, ForceMode2D.Impulse); }
+            if (playerPos > enemyPos) { rigidBody2D.AddForceX(knockbackForce * 1.15f, ForceMode2D.Impulse); }
+            else if (playerPos < enemyPos) { rigidBody2D.AddForceX(knockbackForce * -1.15f, ForceMode2D.Impulse); }
             healt -= UnityEngine.Random.Range(3, 8);
-            // Destroy(target.gameObject);
+        }
+        if (target.gameObject.CompareTag("DeerAttack") && !isDodge && !isKnockback)
+        {
+            isKnockback = true;
+            animator.SetTrigger("gotAttack");
+            rigidBody2D.AddForce(new Vector2(knockbackForce * 1.25f * GetLeftRight(), knockbackForce * 1.85f), ForceMode2D.Impulse);
+            healt -= UnityEngine.Random.Range(5, 13);
+        } 
+        if (target.CompareTag("CheckBar") && !havedBossBar)
+        {
+            bossBar.SetActive(true);
+            havedBossBar = true;
         }
     }
 }
